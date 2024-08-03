@@ -5,11 +5,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from decoder_utils import get_device, read_text, encoder_decoder, get_train_val, get_batch, eval_model
+from data.upload_data import download_train_data
 
-N_EMBD = 384#384 # embedding space
-BLOCK_SIZE = 256 # context length
-BATCH_SIZE = 64 #64
-N_HEAD  = 6
+N_EMBD = 384  # 384 # embedding space
+BLOCK_SIZE = 256  # context length
+BATCH_SIZE = 64  # 64
+N_HEAD = 6
 N_LAYER = 6
 
 DROPOUT = 0.2
@@ -20,13 +21,14 @@ EVAL_INTERVAL = 5000
 
 DATA_SIZE = 1000
 
-SAVEMODEL_FOLDER='../models'
-SAVERESULT_FOLDER='../results'
-DATA_FOLDER='../data'
+SAVEMODEL_FOLDER = '../models'
+SAVERESULT_FOLDER = '../results'
+DATA_FOLDER = '../data'
 
 DATA_PATH = f'{DATA_FOLDER}/python_{DATA_SIZE}.txt'
 SAVERESULT_PATH = f'{SAVERESULT_FOLDER}/decoder_v1_py_{DATA_SIZE}.txt'
 SAVEMODEL_PATH = f'{SAVEMODEL_FOLDER}/decoder_v1_py_P{DATA_SIZE}.pt'
+
 
 # def attention1(x):
 #     B, T, C= x.shape
@@ -40,18 +42,20 @@ class AttentionHead(nn.Module):
         super().__init__()
         self.key = nn.Linear(N_EMBD, head_size, bias=False)
         self.query = nn.Linear(N_EMBD, head_size, bias=False)
-        self.val= nn.Linear(N_EMBD, head_size, bias=False)
-        self.register_buffer('tril', torch.tril(torch.ones(BLOCK_SIZE, BLOCK_SIZE))) # will not be considered as model params
+        self.val = nn.Linear(N_EMBD, head_size, bias=False)
+        self.register_buffer('tril',
+                             torch.tril(torch.ones(BLOCK_SIZE, BLOCK_SIZE)))  # will not be considered as model params
 
         self.dropout = nn.Dropout(DROPOUT)
 
     def forward(self, x):
         B, T, C = x.shape
 
-        k = self.key(x) # roughly the info that this token contains ->  B, T, head_size
-        q = self.query(x) # roughly what the token is interested in -> B, T, head_size
+        k = self.key(x)  # roughly the info that this token contains ->  B, T, head_size
+        q = self.query(x)  # roughly what the token is interested in -> B, T, head_size
 
-        wei = q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5  # link query vs key (B, T, head_size) * (B, head_size, T) -> B, T, T
+        wei = q @ k.transpose(-2, -1) * k.shape[
+            -1] ** -0.5  # link query vs key (B, T, head_size) * (B, head_size, T) -> B, T, T
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # (B, T, T)
         wei = F.softmax(wei, dim=-1)  # (B, T, T)
         wei = self.dropout(wei)
@@ -72,19 +76,20 @@ class MultiHeadedAttention(nn.Module):
         self.proj = nn.Linear(num_head * head_size, N_EMBD)
         self.dropout = nn.Dropout(DROPOUT)
 
-    def forward(self,x):
-        out = torch.cat([h(x) for h in self.heads], dim =-1)
+    def forward(self, x):
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
         out = self.dropout(self.proj(out))
         return out
+
 
 class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embd, 4* n_embd),
+            nn.Linear(n_embd, 4 * n_embd),
             nn.ReLU(),
-            nn.Linear(4* n_embd, n_embd),
-            nn.Dropout (0.2)
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(0.2)
         )
 
     def forward(self, x):
@@ -94,7 +99,7 @@ class FeedForward(nn.Module):
 class Block(nn.Module):
     def __init__(self, n_embd, n_head):
         super().__init__()
-        head_size = n_embd// n_head
+        head_size = n_embd // n_head
         self.sa = MultiHeadedAttention(n_head, head_size)
         self.ffwd = FeedForward(n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
@@ -104,7 +109,6 @@ class Block(nn.Module):
         x = x + self.sa(self.ln1(x))
         x = x + self.ffwd(self.ln2(x))
         return x
-
 
 
 class GPTDecoderOnly(nn.Module):
@@ -164,10 +168,14 @@ class GPTDecoderOnly(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)  # (B, T+1)
         return idx
 
+
 if __name__ == '__main__':
     # make dir
     os.makedirs(SAVEMODEL_FOLDER, exist_ok=True)
     os.makedirs(SAVERESULT_FOLDER, exist_ok=True)
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+    # download data
+    download_train_data(DATA_SIZE)
 
     text = read_text(DATA_PATH)
     chars = sorted(list(set(text)))
@@ -182,8 +190,8 @@ if __name__ == '__main__':
     device = get_device()
     m = model.to(device)
     # print the number of parameters in the model
-    print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
-    print (f"vocal size {vocab_size}")
+    print(sum(p.numel() for p in m.parameters()) / 1e6, 'M parameters')
+    print(f"vocal size {vocab_size}")
 
     # create a PyTorch optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
@@ -195,16 +203,18 @@ if __name__ == '__main__':
                 # every once in a while evaluate the loss on train and val sets
                 if step % EVAL_INTERVAL == 0 or step == num_step - 1:
                     train_loss, val_loss = eval_model(model, train_data, val_data, BLOCK_SIZE, BATCH_SIZE)
-                    print(f"iter: {iter}/{MAX_ITERS}, step: {step}/{num_step}: train loss {train_loss:.4f}, val loss {val_loss:.4f}")
+                    print(
+                        f"iter: {iter}/{MAX_ITERS}, step: {step}/{num_step}: train loss {train_loss:.4f}, val loss {val_loss:.4f}")
                     # generate from the model
                     context = torch.zeros((1, 1), dtype=torch.long, device=device)
                     gen_text = decode(m.generate(context, max_new_tokens=1000)[0].tolist())
-                    print (gen_text)
+                    print(gen_text)
 
                     # save every 1000 steps
                     if step % 10000 == 0:
                         torch.save(m.state_dict(), f'{SAVEMODEL_PATH}/decoder_v1_py_{DATA_SIZE}_{iter}_{step}.pt')
-                    f.write(f"iter: {iter}/{MAX_ITERS}, step: {step}/{num_step}: train loss {train_loss:.4f}, val loss {val_loss:.4f}\n")
+                    f.write(
+                        f"iter: {iter}/{MAX_ITERS}, step: {step}/{num_step}: train loss {train_loss:.4f}, val loss {val_loss:.4f}\n")
                     f.write(gen_text)
                     f.write('================================================================ \n ')
                     f.flush()
@@ -221,7 +231,7 @@ if __name__ == '__main__':
         # generate from the model
         context = torch.zeros((1, 1), dtype=torch.long, device=device)
         gen_text = decode(m.generate(context, max_new_tokens=2000)[0].tolist())
-        #open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
+        # open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
         f.write(gen_text)
         f.close()
 
