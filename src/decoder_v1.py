@@ -1,3 +1,5 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -162,84 +164,88 @@ class GPTDecoderOnly(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)  # (B, T+1)
         return idx
 
+if __name__ == '__main__':
+    # make dir
+    os.makedirs(SAVEMODEL_FOLDER, exist_ok=True)
+    os.makedirs(SAVERESULT_FOLDER, exist_ok=True)
 
-text = read_text(DATA_PATH)
-chars = sorted(list(set(text)))
-vocab_size = len(chars)
+    text = read_text(DATA_PATH)
+    chars = sorted(list(set(text)))
+    vocab_size = len(chars)
 
-encode, decode = encoder_decoder(chars)
-device = get_device()
-data = torch.tensor(encode(text), dtype=torch.long, device=device)
-train_data, val_data = get_train_val(data)
+    encode, decode = encoder_decoder(chars)
+    device = get_device()
+    data = torch.tensor(encode(text), dtype=torch.long, device=device)
+    train_data, val_data = get_train_val(data)
 
-model = GPTDecoderOnly(vocab_size)
-device = get_device()
-m = model.to(device)
-# print the number of parameters in the model
-print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
-print (f"vocal size {vocab_size}")
+    model = GPTDecoderOnly(vocab_size)
+    device = get_device()
+    m = model.to(device)
+    # print the number of parameters in the model
+    print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+    print (f"vocal size {vocab_size}")
 
-# create a PyTorch optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+    # create a PyTorch optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
-with open(SAVERESULT_PATH, 'w') as f:
-    num_step = len(train_data) // BATCH_SIZE
-    for iter in range(MAX_ITERS):
-        for step in range(num_step):
-            # every once in a while evaluate the loss on train and val sets
-            if step % EVAL_INTERVAL == 0 or step == num_step - 1:
-                train_loss, val_loss = eval_model(model, train_data, val_data, BLOCK_SIZE, BATCH_SIZE)
-                print(f"iter: {iter}/{MAX_ITERS}, step: {step}/{num_step}: train loss {train_loss:.4f}, val loss {val_loss:.4f}")
-                # generate from the model
-                context = torch.zeros((1, 1), dtype=torch.long, device=device)
-                gen_text = decode(m.generate(context, max_new_tokens=1000)[0].tolist())
-                print (gen_text)
+    with open(SAVERESULT_PATH, 'w') as f:
+        num_step = len(train_data) // BATCH_SIZE
+        for iter in range(MAX_ITERS):
+            for step in range(num_step):
+                # every once in a while evaluate the loss on train and val sets
+                if step % EVAL_INTERVAL == 0 or step == num_step - 1:
+                    train_loss, val_loss = eval_model(model, train_data, val_data, BLOCK_SIZE, BATCH_SIZE)
+                    print(f"iter: {iter}/{MAX_ITERS}, step: {step}/{num_step}: train loss {train_loss:.4f}, val loss {val_loss:.4f}")
+                    # generate from the model
+                    context = torch.zeros((1, 1), dtype=torch.long, device=device)
+                    gen_text = decode(m.generate(context, max_new_tokens=1000)[0].tolist())
+                    print (gen_text)
 
-                # save every 1000 steps
-                if step % 10000 == 0:
-                    torch.save(m.state_dict(), f'{SAVEMODEL_PATH}/decoder_v1_py_{DATA_SIZE}_{iter}_{step}.pt')
-                f.write(f"iter: {iter}/{MAX_ITERS}, step: {step}/{num_step}: train loss {train_loss:.4f}, val loss {val_loss:.4f}\n")
-                f.write(gen_text)
-                f.write('================================================================ \n ')
-                f.flush()
+                    # save every 1000 steps
+                    if step % 10000 == 0:
+                        torch.save(m.state_dict(), f'{SAVEMODEL_PATH}/decoder_v1_py_{DATA_SIZE}_{iter}_{step}.pt')
+                    f.write(f"iter: {iter}/{MAX_ITERS}, step: {step}/{num_step}: train loss {train_loss:.4f}, val loss {val_loss:.4f}\n")
+                    f.write(gen_text)
+                    f.write('================================================================ \n ')
+                    f.flush()
 
-            # sample a batch of data
-            xb, yb = get_batch('train', train_data, val_data, BLOCK_SIZE, BATCH_SIZE)
+                # sample a batch of data
+                xb, yb = get_batch('train', train_data, val_data, BLOCK_SIZE, BATCH_SIZE)
 
-            # evaluate the loss
-            logits, loss = model(xb, yb)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
+                # evaluate the loss
+                logits, loss = model(xb, yb)
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
 
-    # generate from the model
-    context = torch.zeros((1, 1), dtype=torch.long, device=device)
-    gen_text = decode(m.generate(context, max_new_tokens=2000)[0].tolist())
-    #open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
-    f.write(gen_text)
-    f.close()
+        # generate from the model
+        context = torch.zeros((1, 1), dtype=torch.long, device=device)
+        gen_text = decode(m.generate(context, max_new_tokens=2000)[0].tolist())
+        #open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
+        f.write(gen_text)
+        f.close()
 
-    # save model
-    torch.save(m.state_dict(), SAVEMODEL_PATH)
+        # save model
+        torch.save(m.state_dict(), SAVEMODEL_PATH)
 
-
-# # load weight
-# model.load_state_dict(torch.load(SAVEMODEL))
-# text = f"""
-# class SinglyLinkedList:
-#
-#     def __init__(self, *items):
-#         if items:
-#             self.tail = None
-#             for each in items:
-#                 self.append(each)
-#         else:
-#             self.head = None
-#             self.tail = None
-#
-# """
-#
-# context = torch.tensor(encode(text), dtype=torch.long, device=device).reshape(1, -1)
-# print (context.shape)
-# gen_text = decode(m.generate(context, max_new_tokens=2000)[0].tolist())
-# print (gen_text)
+    ############# Eval ###############
+    # # load weight
+    # model.load_state_dict(torch.load(SAVEMODEL))
+    # text = f"""
+    # class SinglyLinkedList:
+    #
+    #     def __init__(self, *items):
+    #         if items:
+    #             self.tail = None
+    #             for each in items:
+    #                 self.append(each)
+    #         else:
+    #             self.head = None
+    #             self.tail = None
+    #
+    # """
+    #
+    # context = torch.tensor(encode(text), dtype=torch.long, device=device).reshape(1, -1)
+    # print (context.shape)
+    # gen_text = decode(m.generate(context, max_new_tokens=2000)[0].tolist())
+    # print (gen_text)
