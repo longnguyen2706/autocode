@@ -19,7 +19,7 @@ LEARNING_RATE = 3e-4
 MAX_ITERS = 1
 EVAL_INTERVAL = 5000
 
-DATA_SIZE = 1000
+DATA_SIZE = 10000
 
 SAVEMODEL_FOLDER = '../models'
 SAVERESULT_FOLDER = '../results'
@@ -27,7 +27,7 @@ DATA_FOLDER = '../data'
 
 DATA_PATH = f'{DATA_FOLDER}/python_{DATA_SIZE}.txt'
 SAVERESULT_PATH = f'{SAVERESULT_FOLDER}/decoder_v1_py_{DATA_SIZE}.txt'
-SAVEMODEL_PATH = f'{SAVEMODEL_FOLDER}/decoder_v1_py_P{DATA_SIZE}.pt'
+SAVEMODEL_PATH = f'{SAVEMODEL_FOLDER}/decoder_v1_py_{DATA_SIZE}.pt'
 
 
 # def attention1(x):
@@ -212,7 +212,7 @@ if __name__ == '__main__':
 
                     # save every 1000 steps
                     if step % 10000 == 0:
-                        torch.save(m.state_dict(), f'{SAVEMODEL_PATH}/decoder_v1_py_{DATA_SIZE}_{iter}_{step}.pt')
+                        torch.save(m.state_dict(), f'{SAVEMODEL_FOLDER}/decoder_v1_py_{DATA_SIZE}_{iter}_{step}.pt')
                     f.write(
                         f"iter: {iter}/{MAX_ITERS}, step: {step}/{num_step}: train loss {train_loss:.4f}, val loss {val_loss:.4f}\n")
                     f.write(gen_text)
