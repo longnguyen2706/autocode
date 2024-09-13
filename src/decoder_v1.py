@@ -1,4 +1,6 @@
 import os
+import time
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -17,7 +19,7 @@ DROPOUT = 0.2
 
 LEARNING_RATE = 3e-4
 MAX_ITERS = 1
-EVAL_INTERVAL = 5000
+EVAL_INTERVAL = 250
 
 DATA_SIZE = 10000
 
@@ -64,15 +66,50 @@ class AttentionHead(nn.Module):
         return out
 
 
+class CausalSelfAttention(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        # key, query, value projections for all heads, but in a batch
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+        # output projection
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
+        # regularization
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+
+    def forward(self, x):
+        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
+        # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        # output projection
+        y = self.c_proj(y)
+        return y
+@dataclass
+class Config:
+    n_embd: int
+    n_head: int
+
 class MultiHeadedAttention(nn.Module):
     """
     Using multiple attention head
     """
 
-    def __init__(self, num_head, head_size):
+    def     __init__(self, num_head, head_size):
         super().__init__()
         self.num_head = num_head
         self.heads = nn.ModuleList([AttentionHead(head_size) for _ in range(num_head)])
+        # self.heads = nn.ModuleList([CausalSelfAttention(Config(N_EMBD, num_head)) for _ in range(num_head)])
         self.proj = nn.Linear(num_head * head_size, N_EMBD)
         self.dropout = nn.Dropout(DROPOUT)
 
@@ -120,7 +157,7 @@ class GPTDecoderOnly(nn.Module):
         self.ln_f = nn.LayerNorm(N_EMBD)
         self.lm_head = nn.Linear(N_EMBD, vocab_size)
 
-        # better init, not covered in the original GPT video, but important, will cover in followup video
+        # better init
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -170,6 +207,9 @@ class GPTDecoderOnly(nn.Module):
 
 
 if __name__ == '__main__':
+    # use fp32
+    torch.set_float32_matmul_precision('high')
+
     # make dir
     os.makedirs(SAVEMODEL_FOLDER, exist_ok=True)
     os.makedirs(SAVERESULT_FOLDER, exist_ok=True)
@@ -186,7 +226,11 @@ if __name__ == '__main__':
     data = torch.tensor(encode(text), dtype=torch.long, device=device)
     train_data, val_data = get_train_val(data)
 
+
     model = GPTDecoderOnly(vocab_size)
+    # compile model
+    model = torch.compile(model)
+
     device = get_device()
     m = model.to(device)
     # print the number of parameters in the model
@@ -200,6 +244,7 @@ if __name__ == '__main__':
         num_step = len(train_data) // BATCH_SIZE
         for iter in range(MAX_ITERS):
             for step in range(num_step):
+                t0 = time.time()
                 # every once in a while evaluate the loss on train and val sets
                 if step % EVAL_INTERVAL == 0 or step == num_step - 1:
                     train_loss, val_loss = eval_model(model, train_data, val_data, BLOCK_SIZE, BATCH_SIZE)
@@ -228,6 +273,16 @@ if __name__ == '__main__':
                 loss.backward()
                 optimizer.step()
 
+                torch.cuda.synchronize()  # wait for the GPU to finish work
+                t1 = time.time()
+                dt = t1 - t0  # time difference in seconds
+                B, T = xb.size()
+                tokens_processed = B * T
+                tokens_per_sec = tokens_processed / dt
+                print(
+                    f"step {step:5d} | dt: {dt * 1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+                # with open(log_file, "a") as f:
+                #     f.write(f"{step} train {loss_accum.item():.6f}\n")
         # generate from the model
         context = torch.zeros((1, 1), dtype=torch.long, device=device)
         gen_text = decode(m.generate(context, max_new_tokens=2000)[0].tolist())

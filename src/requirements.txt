@@ -79,3 +79,4 @@ urllib3==2.1.0
 wheel==0.41.2
 xxhash==2.0.2
 yarl==1.9.3
+tiktoken==0.7.0
