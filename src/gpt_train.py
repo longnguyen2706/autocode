@@ -14,10 +14,10 @@ import torch.nn.functional as F
 eval_interval = 2000
 log_interval = 1
 eval_iters = 5
-eval_only = False # if True, script exits right after the first eval
-always_save_checkpoint = True # if True, always save a checkpoint after each eval
+eval_only = False  # if True, script exits right after the first eval
+always_save_checkpoint = True  # if True, always save a checkpoint after each eval
 
-batch_size = 4 # if gradient_accumulation_steps > 1, this is the micro-batch size
+batch_size = 4  # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 total_batch_size = 524288
 ddp_world_size = 1
@@ -27,41 +27,41 @@ gradient_accumulation_steps = total_batch_size // (batch_size * block_size * ddp
 n_layer = 12
 n_head = 12
 n_embd = 768
-dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
-bias = False # do we use bias inside LayerNorm and Linear layers?
+dropout = 0.0  # for pretraining 0 is good, for finetuning try 0.1+
+bias = False  # do we use bias inside LayerNorm and Linear layers?
 vocab_size = 50304
 
-learning_rate = 6e-4 # max learning rate
-max_iters = 600000 # total number of training iterations
+learning_rate = 6e-4  # max learning rate
+max_iters = 600000  # total number of training iterations
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
-grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
+grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
 
 # learning rate decay settings
-decay_lr = True # whether to decay the learning rate
-warmup_iters = 2000 # how many steps to warm up for
-lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
-min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+decay_lr = True  # whether to decay the learning rate
+warmup_iters = 2000  # how many steps to warm up for
+lr_decay_iters = 600000  # should be ~= max_iters per Chinchilla
+min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 
 # weight and bias
-wandb_log = False # disabled by default
+wandb_log = False  # disabled by default
 wandb_project = 'owt'
-wandb_run_name = 'gpt2' # 'run' + str(time.time())
+wandb_run_name = 'gpt2'  # 'run' + str(time.time())
 
-config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
+init_from = "resume" # "scratch", "resume
+config_keys = [k for k, v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 # exec(open('configurator.py').read()) # overrides from command line or config file
-config = {k: globals()[k] for k in config_keys} # will be useful for logging
+config = {k: globals()[k] for k in config_keys}  # will be useful for logging
 
-device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
+device = 'cuda'  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 master_process = True
 seed_offset = 0
 
-out_dir = 'output'
+out_dir = '../models/gpt2'
 
 tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
-
 
 # not using distributed training
 torch.manual_seed(1337)
@@ -69,10 +69,13 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
 # optimization 1: tf32 precision
-torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision('high')
+torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
+torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
+
 # note: float16 data type will automatically use a GradScaler
-dtype='bfloat16' # 'float32', 'bfloat16', 'float16'
+dtype = 'bfloat16'  # 'float32', 'bfloat16', 'float16'
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
@@ -83,27 +86,53 @@ best_val_loss = 1e9
 print("Initializing a new model from scratch")
 
 # determine the vocab size we'll use for from-scratch training
-meta_vocab_size = None#TODO: init meta vocal size here
+meta_vocab_size = None  # TODO: init meta vocal size here
 if meta_vocab_size is None:
     print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
 
 # init model
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
-model_args['vocab_size']= meta_vocab_size if meta_vocab_size is not None else 50304
-gptconf = GPTConfig(**model_args)
-model = GPT(gptconf)
-model.to(device)
+                  bias=bias, vocab_size=None, dropout=dropout)  # start with model_args from command line
+model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
 
+if init_from =='scratch':
+    model = GPT(GPTConfig(**model_args))
+    model = model.to(device)
+    iter_num = 0
+    best_val_loss = 10 ** 9
+
+elif init_from == 'resume':
+
+    checkpoint = torch.load("../models/ckpt.pt", map_location=device)
+    checkpoint_model_args = checkpoint['model_args']
+    # force these config attributes to be equal otherwise we can't even resume training
+    # the rest of the attributes (e.g. dropout) can stay as desired from command line
+    state_dict = checkpoint['model']
+    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
+        model_args[k] = checkpoint_model_args[k]
+    unwanted_prefix = '_orig_mod.'
+    for k, v in list(state_dict.items()):
+        if k.startswith(unwanted_prefix):
+            state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+
+    model = GPT(GPTConfig(**model_args))
+    model.load_state_dict(state_dict)
+    iter_num = checkpoint['iter_num']
+    best_val_loss = checkpoint['best_val_loss']
+
+model.to(device)
 # optimization 3: TODO: autocast with bf16
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'bfloat16'))
 optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 
+
 # optimization 2: compile the model
 model = torch.compile(model)
 
 enc = tiktoken.get_encoding("gpt2")
+
+
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
 def estimate_loss():
@@ -120,6 +149,7 @@ def estimate_loss():
         out[split] = losses.mean()
     model.train()
     return out
+
 
 code_starter = f"""
       def _broadcast_indexes_vectorized(self, key):
@@ -188,19 +218,24 @@ def generate():
             decoded = f"error: {e}"
 
         # print(f"rank {'0'} sample {i}: {decoded}")
-        print ("######### Generated code ##########")
+        print("######### Generated code ##########")
         print(decoded)
         print("###################################")
 
-data_dir = os.path.join('../data', "pythoncode")
-train_loader = DataLoaderLite(data_root= data_dir, B=batch_size, T=block_size, process_rank=0, num_processes=ddp_world_size, split="train", device=device)
-val_loader = DataLoaderLite(data_root= data_dir, B=batch_size, T=block_size, process_rank=0, num_processes=ddp_world_size, split="val", device=device)
-def get_batch(split):
 
+data_dir = os.path.join('../data', "pythoncode")
+train_loader = DataLoaderLite(data_root=data_dir, B=batch_size, T=block_size, process_rank=0,
+                              num_processes=ddp_world_size, split="train", device=device)
+val_loader = DataLoaderLite(data_root=data_dir, B=batch_size, T=block_size, process_rank=0,
+                            num_processes=ddp_world_size, split="val", device=device)
+
+
+def get_batch(split):
     if split == 'train':
         return train_loader.next_batch()
     else:
         return val_loader.next_batch()
+
 
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
@@ -212,20 +247,21 @@ def get_lr(it):
     # 3) in between, use cosine decay down to min learning rate
     decay_ratio = (it - warmup_iters) / (lr_decay_iters - warmup_iters)
     assert 0 <= decay_ratio <= 1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff ranges 0..1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
     return min_lr + coeff * (learning_rate - min_lr)
+
 
 # logging
 if wandb_log and master_process:
     import wandb
+
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
 running_mfu = -1.0
 raw_model = model
 
-local_iter_num = 0 # number of iterations in the lifetime of this process
-X, Y = get_batch('train') # fetch the very first batch
-
+local_iter_num = 0  # number of iterations in the lifetime of this process
+X, Y = get_batch('train')  # fetch the very first batch
 
 while True:
     # determine and set the learning rate for this iteration
