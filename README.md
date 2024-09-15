@@ -63,3 +63,21 @@ Big epic
 - [x] using the pretrained model and finetune
 
 Vocab size is not fixed (depends on text, which is bad, cannot use trained model)
+
+torch.set_float32_matmul_precision('medium'), bf16
+3090 - 24GB -> 0.22$/ hr
+- batch_size = 16 -> GPU memory 84%
+- token per sec = 61000
+
+A100 PCIe - 80GB (300W) -> 1.19$/ hr
+- batch_size = 80 -> GPU memory 97%
+- token per sec = 152000
+
+4060 - 8GB (80W) 
+- batch_size = 4 
+- token per sec = 22000
+- 
+torch.set_float32_matmul_precision('high'), bf16
+3090 - 24GB -> 0.22$/ hr
+- batch_size = 16 -> GPU memory 84%
+- token per sec = 61000

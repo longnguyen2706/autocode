@@ -6,11 +6,14 @@ from contextlib import nullcontext
 import numpy as np
 import tiktoken
 import torch
+from torch.distributed import init_process_group, destroy_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from gpt2_model import GPT, GPTConfig
 from gpt2_dataloader import DataLoaderLite
 import torch.nn.functional as F
 
+############ CONFIG #############
 eval_interval = 2000
 log_interval = 1
 eval_iters = 5
@@ -20,8 +23,7 @@ always_save_checkpoint = True  # if True, always save a checkpoint after each ev
 batch_size = 4  # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 total_batch_size = 524288
-ddp_world_size = 1
-gradient_accumulation_steps = total_batch_size // (batch_size * block_size * ddp_world_size)
+ddp_world_size = 8
 
 # model
 n_layer = 12
@@ -58,7 +60,30 @@ device = 'cuda'  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps
 master_process = True
 seed_offset = 0
 
+# DDP settings
+backend = 'nccl' # 'nccl', 'gloo', etc.
+
 out_dir = '../models/gpt2'
+
+############## END CONFIG ##############
+gradient_accumulation_steps = total_batch_size // (batch_size * block_size * ddp_world_size)
+
+ddp = int(os.environ.get('RANK', -1)) != -1
+if ddp: 
+    init_process_group(backend=backend)
+    ddp_rank = torch.distributed.get_rank()
+    ddp_local_rank = torch.distributed.get_rank()
+    print (f"ddp rank: {ddp_rank}, ddp local rank: {ddp_local_rank}")
+    device = f'cuda:{ddp_rank}'
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
+    seed_offset = ddp_rank # each process gets a different seed
+
+else:
+    # if not ddp, we are running on a single gpu, and one process
+    master_process = True
+    seed_offset = 0
+    ddp_world_size = 1
 
 tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
@@ -68,7 +93,7 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-# optimization 1: tf32 precision
+# optimization 1: tf16 precision
 torch.set_float32_matmul_precision('high')
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
@@ -78,6 +103,7 @@ device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.aut
 dtype = 'bfloat16'  # 'float32', 'bfloat16', 'float16'
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
+###############
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
@@ -119,19 +145,20 @@ elif init_from == 'resume':
     model.load_state_dict(state_dict)
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
-
 model.to(device)
-# optimization 3: TODO: autocast with bf16
+
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'bfloat16'))
 optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-
+if init_from == 'resume':
+    optimizer.load_state_dict(checkpoint['optimizer'])
+checkpoint = None # free up memory
 
 # optimization 2: compile the model
 model = torch.compile(model)
-
+if ddp:
+    model = DDP(model, devices_ids= [ddp_local_rank])
 enc = tiktoken.get_encoding("gpt2")
-
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
@@ -258,7 +285,7 @@ if wandb_log and master_process:
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
 running_mfu = -1.0
-raw_model = model
+raw_model = model if not ddp else model.module
 
 local_iter_num = 0  # number of iterations in the lifetime of this process
 X, Y = get_batch('train')  # fetch the very first batch
@@ -299,6 +326,12 @@ while True:
 
     t0 = time.time()
     for micro_step in range(gradient_accumulation_steps):
+        if ddp:
+            # in DDP training we only need to sync gradients at the last micro step.
+            # the official way to do this is with model.no_sync() context manager, but
+            # I really dislike that this bloats the code and forces us to repeat code
+            # looking at the source of that context manager, it just toggles this variable
+            model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
             logits, loss = model(X, Y)
             loss = loss/gradient_accumulation_steps # scale the loss
@@ -326,9 +359,9 @@ while True:
         # get loss as float. note: this is a CPU-GPU sync point
         # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
         lossf = loss.item() * gradient_accumulation_steps
-        # if local_iter_num >= 5:  # let the training loop settle a bit
-        #     mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
-        #     running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
+        if local_iter_num >= 5:  # let the training loop settle a bit
+            mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
+            running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
 
         tokens_processed = train_loader.B * train_loader.T * gradient_accumulation_steps * ddp_world_size
         tokens_per_sec = tokens_processed / dt
@@ -336,7 +369,7 @@ while True:
               f"tok/sec: {tokens_per_sec :.2f}")
         # once in a while generate from the model (except step 0, which is noise)
 
-    if iter_num % 5 == 0:
+    if iter_num % 250 == 0:
         generate()
     iter_num += 1
     local_iter_num += 1
@@ -344,3 +377,5 @@ while True:
     # termination conditions
     if iter_num > max_iters:
         break
+if ddp:
+    destroy_process_group()
