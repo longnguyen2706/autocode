@@ -14,7 +14,8 @@ from gpt2_dataloader import DataLoaderLite
 import torch.nn.functional as F
 
 ############ CONFIG #############
-eval_interval = 2000
+eval_interval = 100
+save_interval = 2000
 log_interval = 1
 eval_iters = 5
 eval_only = False  # if True, script exits right after the first eval
@@ -23,7 +24,6 @@ always_save_checkpoint = True  # if True, always save a checkpoint after each ev
 batch_size = 16  # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
 total_batch_size = 524288
-ddp_world_size = 2
 
 # model
 n_layer = 12
@@ -34,7 +34,9 @@ bias = False  # do we use bias inside LayerNorm and Linear layers?
 vocab_size = 50304
 
 learning_rate = 6e-4  # max learning rate
-max_iters = 600000  # total number of training iterations
+# max_iters = 600000  # total number of training iterations
+max_iters = 19073
+
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
@@ -42,14 +44,14 @@ grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
 
 # learning rate decay settings
 decay_lr = True  # whether to decay the learning rate
-warmup_iters = 2000  # how many steps to warm up for
-lr_decay_iters = 600000  # should be ~= max_iters per Chinchilla
+warmup_iters = 500  # how many steps to warm up for
+lr_decay_iters = max_iters  # should be ~= max_iters per Chinchilla
 min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 
 # weight and bias
-wandb_log = False  # disabled by default
-wandb_project = 'owt'
-wandb_run_name = 'gpt2'  # 'run' + str(time.time())
+wandb_log = True  # disabled by default
+wandb_project = 'codegen'
+wandb_run_name = 'gpt2' + str(time.time()) # 'run' + str(time.time())
 
 init_from = "scratch"  # "scratch", "resume
 config_keys = [k for k, v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
@@ -317,8 +319,9 @@ while True:
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
+    is_last_iter = iter_num == max_iters - 1
     # evaluate the loss on train/val sets and write checkpoints
-    if iter_num > 0 and iter_num % eval_interval == 0 and master_process:
+    if ( iter_num % eval_interval == 0 or is_last_iter) and master_process:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         if wandb_log:
@@ -329,9 +332,11 @@ while True:
                 "lr": lr,
                 "mfu": running_mfu * 100,  # convert to percentage
             })
+
+
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
-            if iter_num > 0:
+            if (iter_num > 0 and iter_num % save_interval == 0) or is_last_iter:
                 checkpoint = {
                     'model': raw_model.state_dict(),
                     'optimizer': optimizer.state_dict(),
@@ -341,7 +346,7 @@ while True:
                     'config': config,
                 }
                 print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+                torch.save(checkpoint, os.path.join(out_dir, f'ckpt_{str(iter_num)}.pt'))
     if iter_num == 0 and eval_only:
         break
 
@@ -390,7 +395,7 @@ while True:
               f"tok/sec: {tokens_per_sec :.2f}")
         # once in a while generate from the model (except step 0, which is noise)
 
-    if iter_num % 5 == 0 and master_process:
+    if iter_num % (eval_iters*5) == 0 and master_process:
         generate()
     iter_num += 1
     local_iter_num += 1
