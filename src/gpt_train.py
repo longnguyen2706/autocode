@@ -17,7 +17,7 @@ import torch.nn.functional as F
 eval_interval = 100
 save_interval = 2000
 log_interval = 1
-eval_iters = 5
+eval_iters = 50
 eval_only = False  # if True, script exits right after the first eval
 always_save_checkpoint = True  # if True, always save a checkpoint after each eval
 
@@ -395,7 +395,7 @@ while True:
               f"tok/sec: {tokens_per_sec :.2f}")
         # once in a while generate from the model (except step 0, which is noise)
 
-    if iter_num % (eval_iters*5) == 0 and master_process:
+    if iter_num % (eval_interval*5) == 0 and master_process:
         generate()
     iter_num += 1
     local_iter_num += 1
