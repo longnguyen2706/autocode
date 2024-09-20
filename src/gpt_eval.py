@@ -18,7 +18,8 @@ eval_interval = 100
 save_interval = 2000
 log_interval = 1
 eval_iters = 50
-eval_only = False  # if True, script exits right after the first eval
+eval_only = True  # if True, script exits right after the first eval
+is_compile =False # default is True
 always_save_checkpoint = True  # if True, always save a checkpoint after each eval
 
 batch_size = 4  # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -49,11 +50,11 @@ lr_decay_iters = max_iters  # should be ~= max_iters per Chinchilla
 min_lr = 6e-5  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 
 # weight and bias
-wandb_log = True  # disabled by default
+wandb_log = False  # disabled by default
 wandb_project = 'codegen'
 wandb_run_name = 'gpt2' + str(time.time()) # 'run' + str(time.time())
 
-init_from = "gpt2"  # "scratch", "resume
+init_from = "resume"  # "scratch", "resume
 config_keys = [k for k, v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 # exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys}  # will be useful for logging
@@ -134,7 +135,7 @@ if init_from == 'scratch':
 
 elif init_from == 'resume':
 
-    checkpoint = torch.load("../models/ckpt.pt", map_location=device)
+    checkpoint = torch.load("../models/gpt2/models_gpt2_ckpt_8000.pt", map_location=device)
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line
@@ -150,14 +151,6 @@ elif init_from == 'resume':
     model.load_state_dict(state_dict)
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
-elif init_from.startswith('gpt2'):
-    print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
-    # initialize from OpenAI GPT-2 weights
-    override_args = dict(dropout=dropout)
-    model = GPT.from_pretrained(init_from, override_args)
-    # read off the created config params, so we can store them into checkpoint correctly
-    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
-        model_args[k] = getattr(model.config, k)
 
 # crop down the model block size if desired, using model surgery
 if block_size < model.config.block_size:
@@ -174,7 +167,9 @@ checkpoint = None  # free up memory
 
 # optimization 2: compile the model
 uncompiled_model = model
-model = torch.compile(model)
+
+if is_compile:
+    model = torch.compile(model)
 
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
@@ -199,31 +194,31 @@ def estimate_loss():
     return out
 
 
-code_starter = f"""
-      def _broadcast_indexes_vectorized(self, key):
-            variables = []
-            out_dims_set = OrderedSet()
-            for dim, value in zip(self.dims, key):
-                if isinstance(value, slice):
-                    out_dims_set.add(dim)
-                else:
-                    variable = (
-                        value
-                        if isinstance(value, Variable)
-                        else as_variable(value, name=dim)
-                    )
-"""
+# code_starter = f"""
+#       def _broadcast_indexes_vectorized(self, key):
+#             variables = []
+#             out_dims_set = OrderedSet()
+#             for dim, value in zip(self.dims, key):
+#                 if isinstance(value, slice):
+#                     out_dims_set.add(dim)
+#                 else:
+#                     variable = (
+#                         value
+#                         if isinstance(value, Variable)
+#                         else as_variable(value, name=dim)
+#                     )
+# """
 
 
-# code_starter = '''
-#     def to_index(self):
-#         # Convert this variable to a pandas.Index
-#         return self.to_index_variable().to_index()
-#
-#     def to_dict(self, data=True):
-#         # Dictionary representation of variable.
-#         item = {"dims": self.dims, "attrs": decode_numpy_dict_values(self.attrs)}
-# '''
+code_starter = '''
+    def to_index(self):
+        # Convert this variable to a pandas.Index
+        return self.to_index_variable().to_index()
+
+    def to_dict(self, data=True):
+        # Dictionary representation of variable.
+        item = {"dims": self.dims, "attrs": decode_numpy_dict_values(self.attrs)}
+'''
 
 @torch.no_grad()
 def generate():
@@ -252,7 +247,7 @@ def generate():
             probs = F.softmax(logits, dim=-1)
             # do top-k sampling of 50 (huggingface pipeline default)
             # topk_probs here becomes (5, 50), topk_indices is (5, 50)
-            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+            topk_probs, topk_indices = torch.topk(probs, 10, dim=-1)
             # select a token from the top-k probabilities
             # note: multinomial does not demand the input to sum to 1
             ix = torch.multinomial(topk_probs, 1, generator=sample_rng)  # (B, 1)
@@ -320,6 +315,7 @@ raw_model = model if not ddp else model.module
 
 local_iter_num = 0  # number of iterations in the lifetime of this process
 X, Y = get_batch('train')  # fetch the very first batch
+iter_num = 0
 
 while True:
     # determine and set the learning rate for this iteration
@@ -356,6 +352,8 @@ while True:
                 print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, f'ckpt_{str(iter_num)}.pt'))
     if iter_num == 0 and eval_only:
+        for i in range(5):
+            generate()
         break
 
     t0 = time.time()
