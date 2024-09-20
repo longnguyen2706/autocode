@@ -165,3 +165,6 @@ results/
 results2/
 
 data/
+
+# Weight and bias log
+src/wandb/*
