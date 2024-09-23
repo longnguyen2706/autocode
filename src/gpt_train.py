@@ -225,54 +225,73 @@ code_starter = f"""
 #         item = {"dims": self.dims, "attrs": decode_numpy_dict_values(self.attrs)}
 # '''
 
+# @torch.no_grad()
+# def generate():
+#     import torch._dynamo
+#     torch._dynamo.config.suppress_errors = True
+
+#     model.eval()
+#     num_return_sequences = 1
+#     max_length = 1024
+#     # print (code_starter)
+#     tokens = enc.encode(code_starter)
+#     # print(len(tokens))
+#     tokens = torch.tensor(tokens, dtype=torch.long)
+#     tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+#     xgen = tokens.to(device)
+#     sample_rng = torch.Generator(device=device)
+#     sample_rng.manual_seed(42)  # ddp rank
+#     while xgen.size(1) < max_length:
+#         # forward the model to get the logits
+#         with torch.no_grad():
+#             with ctx:
+#                 logits, loss = model(xgen)  # (B, T, vocab_size)
+#             # take the logits at the last position
+#             # logits = logits[:, -1, :]  # (B, vocab_size)
+#             # get the probabilities
+#             probs = F.softmax(logits, dim=-1)
+#             # do top-k sampling of 50 (huggingface pipeline default)
+#             # topk_probs here becomes (5, 50), topk_indices is (5, 50)
+#             topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+#             # select a token from the top-k probabilities
+#             # note: multinomial does not demand the input to sum to 1
+#             ix = torch.multinomial(topk_probs, 1, generator=sample_rng)  # (B, 1)
+#             # gather the corresponding indices
+#             xcol = torch.gather(topk_indices, -1, ix)  # (B, 1)
+#             # append to the sequence
+#             xgen = torch.cat((xgen, xcol), dim=1)
+#     # print the generated text
+#     for i in range(num_return_sequences):
+#         tokens = xgen[i, :max_length].tolist()
+#         try:
+#             decoded = enc.decode(tokens)
+#         except BaseException as e:
+#             decoded = f"error: {e}"
+
+#         # print(f"rank {'0'} sample {i}: {decoded}")
+#         print("######### Generated code ##########")
+#         print(decoded)
+#         print("###################################")
+#     torch._dynamo.config.suppress_errors = False
+
 @torch.no_grad()
 def generate():
     import torch._dynamo
     torch._dynamo.config.suppress_errors = True
 
     model.eval()
-    num_return_sequences = 1
-    max_length = 1024
-    # print (code_starter)
     tokens = enc.encode(code_starter)
     # print(len(tokens))
-    tokens = torch.tensor(tokens, dtype=torch.long)
-    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-    xgen = tokens.to(device)
-    sample_rng = torch.Generator(device=device)
-    sample_rng.manual_seed(42)  # ddp rank
-    while xgen.size(1) < max_length:
-        # forward the model to get the logits
-        with torch.no_grad():
-            with ctx:
-                logits, loss = model(xgen)  # (B, T, vocab_size)
-            # take the logits at the last position
-            # logits = logits[:, -1, :]  # (B, vocab_size)
-            # get the probabilities
-            probs = F.softmax(logits, dim=-1)
-            # do top-k sampling of 50 (huggingface pipeline default)
-            # topk_probs here becomes (5, 50), topk_indices is (5, 50)
-            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-            # select a token from the top-k probabilities
-            # note: multinomial does not demand the input to sum to 1
-            ix = torch.multinomial(topk_probs, 1, generator=sample_rng)  # (B, 1)
-            # gather the corresponding indices
-            xcol = torch.gather(topk_indices, -1, ix)  # (B, 1)
-            # append to the sequence
-            xgen = torch.cat((xgen, xcol), dim=1)
-    # print the generated text
-    for i in range(num_return_sequences):
-        tokens = xgen[i, :max_length].tolist()
-        try:
-            decoded = enc.decode(tokens)
-        except BaseException as e:
-            decoded = f"error: {e}"
+    tokens = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).to(device)
+    # context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    idxs = model.generate(tokens, 1024, top_k=10)[0].tolist()
+    decoded = enc.decode(idxs)
+    print("######### Generated code ##########")
+    print(decoded)
+    print("###################################")
 
-        # print(f"rank {'0'} sample {i}: {decoded}")
-        print("######### Generated code ##########")
-        print(decoded)
-        print("###################################")
     torch._dynamo.config.suppress_errors = False
+
 
 
 data_dir = os.path.join('../data', "pythoncode_filter")
@@ -403,8 +422,8 @@ while True:
               f"tok/sec: {tokens_per_sec :.2f}")
         # once in a while generate from the model (except step 0, which is noise)
 
-    # if iter_num % (eval_interval*2) == 0 and master_process:
-    #     generate()
+    if iter_num % (eval_interval*2) == 0 and master_process:
+        generate()
     iter_num += 1
     local_iter_num += 1
 
