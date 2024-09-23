@@ -14,6 +14,7 @@ from gpt2_dataloader import DataLoaderLite
 import torch.nn.functional as F
 
 ############ CONFIG #############
+model_path = '../models/gpt2/filtered/ckpt_2000.pt'#'../models/gpt2/ckpt_gpt2_finetune_2000.pt'
 eval_interval = 100
 save_interval = 2000
 log_interval = 1
@@ -135,7 +136,7 @@ if init_from == 'scratch':
 
 elif init_from == 'resume':
 
-    checkpoint = torch.load("../models/gpt2/models_gpt2_ckpt_8000.pt", map_location=device)
+    checkpoint = torch.load(model_path, map_location=device)
     checkpoint_model_args = checkpoint['model_args']
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line
@@ -318,6 +319,14 @@ X, Y = get_batch('train')  # fetch the very first batch
 iter_num = 0
 
 while True:
+    model.eval()
+    tokens = enc.encode(code_starter)
+    # print(len(tokens))
+    tokens = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).to(device)
+    # context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    idxs = model.generate(tokens, 2048)[0].tolist()
+    decoded = enc.decode(idxs)
+    print (decoded)
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:

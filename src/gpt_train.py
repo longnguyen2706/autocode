@@ -35,7 +35,7 @@ vocab_size = 50304
 
 learning_rate = 6e-4  # max learning rate
 # max_iters = 600000  # total number of training iterations
-max_iters = 19073
+max_iters = 10000 #19073
 
 weight_decay = 1e-1
 beta1 = 0.9
@@ -66,7 +66,7 @@ seed_offset = 0
 ddp = True
 backend = 'nccl'  # 'nccl', 'gloo', etc.
 
-out_dir = '../models/gpt2'
+out_dir = '../models/gpt2/filtered'
 os.makedirs(out_dir, exist_ok=True)
 
 ############## END CONFIG ##############
@@ -275,7 +275,7 @@ def generate():
     torch._dynamo.config.suppress_errors = False
 
 
-data_dir = os.path.join('../data', "pythoncode")
+data_dir = os.path.join('../data', "pythoncode_filter")
 if ddp:
     train_loader = DataLoaderLite(data_root=data_dir, B=batch_size, T=block_size, process_rank=ddp_rank,
                                   num_processes=ddp_world_size, split="train", device=device)
@@ -403,8 +403,8 @@ while True:
               f"tok/sec: {tokens_per_sec :.2f}")
         # once in a while generate from the model (except step 0, which is noise)
 
-    if iter_num % (eval_interval*5) == 0 and master_process:
-        generate()
+    # if iter_num % (eval_interval*2) == 0 and master_process:
+    #     generate()
     iter_num += 1
     local_iter_num += 1
 

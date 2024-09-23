@@ -10,6 +10,7 @@ git clone https://github.com/longnguyen2706/autocode.git
 
 cd autocode/src
 python -m pip install --upgrade pip
+pip install wandb tiktoken transformers
 pip install -r requirements_runpod.txt 
 ```
 
@@ -27,11 +28,21 @@ mv autocode-sa.json /workspace/autocode-sa.json
 cd src 
 ```
 
+### VastAI 
+```bash
+ wget https://raw.githubusercontent.com/vast-ai/vast-python/master/vast.py -O vast; chmod +x vast;
+./vast set api-key <key>
+./vast stop instance 12611953
+
+```
+
 ### Gcloud utils
 ```bash
 # install gcloud CLI (optional)
 chmod 777 script/install_gsutil.sh 
 script/install_gsutil.sh
+source /root/.bashrc
+
 ```
 
 ### VM utils
@@ -60,6 +71,9 @@ gsutil -m cp -r models/* gs://auto-code-gcs/models
 
 # copy data from GCS
 gsutil -m cp -r gs://auto-code-gcs/pythoncode/* /workspace/autocode/data/pythoncode/ 
+
+mkdir /workspace/autocode/data/pythoncode_filter/ 
+gsutil -m cp -r gs://auto-code-gcs/python_filtered/* /workspace/autocode/data/pythoncode_filter/ 
 ```
 
 # Train
